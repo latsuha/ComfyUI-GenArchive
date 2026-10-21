@@ -1,0 +1,17 @@
+[project]
+name = "genarchive"
+description = "Archive every generated image together with the reference images it was made from. Fullscreen viewer, categories for failed images, one-click regeneration with the same references, color correction (presets, brush) and detail retouch from references."
+version = "1.0.0"
+license = { file = "LICENSE" }
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = []   # numpy, Pillow, torch and aiohttp are already part of ComfyUI
+
+[project.urls]
+Repository = "https://github.com/latsuha/ComfyUI-GenArchive"
+"Bug Tracker" = "https://github.com/latsuha/ComfyUI-GenArchive/issues"
+
+[tool.comfy]
+PublisherId = "YOUR_PUBLISHER_ID"   # your publisher id from https://registry.comfy.org
+DisplayName = "GenArchive"
+Icon = ""
