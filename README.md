@@ -127,6 +127,14 @@ You can copy the container into other workflows — it works by session and cate
 - Deleting session files manually breaks the links for that session only.
 - The archive keeps full copies of results and references; delete old sessions when you no longer need them.
 
+## Security notes
+
+A workflow is code you run, so the node is deliberately careful about which files it touches:
+
+- The optional `path_1 … path_4` inputs are only *hints* for the original file of a reference. A path is used only if it is a **real image file** (verified, not just by extension) that lies inside ComfyUI's `input` / `output` / `temp` folders or inside a **folder configured on the connected loader node** (e.g. the folder of a batch loader). Otherwise it is ignored and the image that arrived through the `ref_N` pin is stored instead. Paths with `..`, and symlinks that point outside the allowed folders, are rejected. A workflow can therefore not make the node copy keys, configs or other non-image files into the archive.
+- Want it even stricter? Set the environment variable `GENARCHIVE_STRICT_PATHS=1` before starting ComfyUI: then only ComfyUI's own input/output/temp folders are trusted (references from other folders are stored as a copy of the loader's image).
+- The viewer's web routes only serve and modify files inside `output/GenArchive/<session>/`; file names read from `registry.json` must stay inside that folder too.
+
 ## Credits
 
 All of the code in this repository — the Python nodes, the server routes, the browser UI and the documentation — was written by **Claude Sonnet 5.5**, Anthropic's AI assistant, in a long conversation with the project's author. The author had the idea, directed the design and tested the features in real ComfyUI workflows; Claude wrote the implementation and ran its own automated tests in a simulated environment (not inside a real ComfyUI), so bug reports are very welcome.

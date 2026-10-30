@@ -113,56 +113,113 @@ def _upstream_node(prompt, unique_id, input_name):
     return None
 
 
+# --- safety: which files may be copied into the archive -------------------------------------------
+# A workflow must not be able to make this node copy arbitrary files (keys, configs...) into the archive.
+# A path is trusted only if it is a REAL IMAGE and lies inside ComfyUI's input/output/temp folders or inside a
+# folder that is configured on the connected loader node. Set GENARCHIVE_STRICT_PATHS=1 to trust ComfyUI's own
+# folders only. Anything else falls back to storing the image that came through the loader pin.
+_STRICT = os.environ.get("GENARCHIVE_STRICT_PATHS", "").strip().lower() in ("1", "true", "yes")
+_MAX_REF_BYTES = 512 * 1024 * 1024
+_valid_cache = {}
+
+
+def _within(path, root):
+    """True if `path` really lies inside the folder `root` (symlinks and '..' are resolved)."""
+    try:
+        r = os.path.realpath(root)
+        return os.path.commonpath([os.path.realpath(path), r]) == r
+    except (ValueError, OSError):   # e.g. a different drive on Windows
+        return False
+
+
+def _is_image_file(path):
+    """A real image file of a sane size (never a key, a config or any other file)."""
+    try:
+        if not path.lower().endswith(_IMG_EXTS) or not os.path.isfile(path):
+            return False
+        st = os.stat(path)
+        if st.st_size > _MAX_REF_BYTES:
+            return False
+        key = (path, st.st_mtime_ns, st.st_size)
+        if key not in _valid_cache:
+            with Image.open(path) as im:
+                im.verify()
+            if len(_valid_cache) > 5000:
+                _valid_cache.clear()
+            _valid_cache[key] = True
+        return True
+    except Exception:
+        return False
+
+
+def _safe_join(sdir, rel):
+    """Archive-relative path -> absolute path, or None if it would leave the session folder."""
+    p = os.path.join(sdir, rel or "")
+    return p if _within(p, sdir) else None
+
+
 def _try_file(d, name):
+    """Find `name` (also without its extension) inside the folder `d`. Never leaves the folder."""
     p = os.path.join(d, name)
-    if os.path.isfile(p):
-        return os.path.abspath(p)
+    cands = [p]
     if not os.path.splitext(name)[1]:
-        for ext in _IMG_EXTS:
-            if os.path.isfile(p + ext):
-                return os.path.abspath(p + ext)
-    hits = sorted(glob.glob(glob.escape(p) + ".*"))
-    hits = [h for h in hits if h.lower().endswith(_IMG_EXTS)]
-    if hits:
-        return os.path.abspath(hits[0])
+        cands += [p + ext for ext in _IMG_EXTS]
+    cands += sorted(glob.glob(glob.escape(p) + ".*"))
+    for c in cands:
+        if _within(c, d) and _is_image_file(c):
+            return os.path.abspath(c)
     return None
 
 
-def _resolve_path(prompt, unique_id, img_input, name_input, name):
-    """Tries to find the full path of the reference file. Returns None on failure."""
-    try:
-        if name and os.path.isabs(name) and os.path.isfile(name):
-            return os.path.abspath(name)
 
+def _resolve_path(prompt, unique_id, img_input, name_input, name):
+    """Finds the full path of the reference file, or None (then the image from the loader pin is stored).
+
+    Only trusted paths are returned: a real image inside ComfyUI's input/output/temp folders or inside a folder
+    configured on the connected loader node (see the safety notes above)."""
+    try:
         nodes = []
         for key in (img_input, name_input):
             n = _upstream_node(prompt, unique_id, key)
             if n is not None and n not in nodes:
                 nodes.append(n)
 
-        dirs = []
+        in_dir = folder_paths.get_input_directory()
+        roots = [in_dir, folder_paths.get_output_directory(), folder_paths.get_temp_directory()]
+        loader_dirs = []   # folders configured on the connected loader node(s)
         for n in nodes:
             inputs = n.get("inputs") or {}
-            img = inputs.get("image")
-            if isinstance(img, str):  # LoadImage and similar
-                try:
-                    p = folder_paths.get_annotated_filepath(img)
-                    if p and os.path.isfile(p):
-                        return os.path.abspath(p)
-                except Exception:
-                    pass
             for k in _DIR_KEYS:
                 v = inputs.get(k)
                 if isinstance(v, str) and v.strip():
                     v = v.strip()
-                    for cand in (v, os.path.join(folder_paths.get_input_directory(), v)):
-                        if os.path.isdir(cand) and cand not in dirs:
-                            dirs.append(cand)
+                    for cand in (v, os.path.join(in_dir, v)):
+                        if os.path.isdir(cand) and cand not in loader_dirs:
+                            loader_dirs.append(cand)
+        allowed = roots if _STRICT else roots + loader_dirs
+
+        def trusted(p):
+            return bool(p) and any(_within(p, r) for r in allowed) and _is_image_file(p)
+
+        for n in nodes:   # LoadImage and similar
+            img = (n.get("inputs") or {}).get("image")
+            if isinstance(img, str):
+                try:
+                    p = folder_paths.get_annotated_filepath(img)
+                except Exception:
+                    p = None
+                if trusted(p):
+                    return os.path.abspath(p)
         if name:
-            for d in dirs:
-                p = _try_file(d, name)
-                if p:
-                    return p
+            if os.path.isabs(name):   # e.g. the file_paths output of a batch loader
+                if trusted(name):
+                    return os.path.abspath(name)
+            else:                     # e.g. filename_text of WAS Load Image Batch
+                for d in loader_dirs:
+                    if not _STRICT or any(_within(d, r) for r in roots):
+                        p = _try_file(d, name)
+                        if p:
+                            return p
     except Exception as e:
         print(f"{TAG} Could not resolve reference path: {e}")
     return None
@@ -280,8 +337,8 @@ class GenArchiveRegistry:
         for k in range(1, MAX_REFS + 1):
             optional[f"path_{k}"] = ("STRING", {
                 "forceInput": True,
-                "tooltip": "Optional: file path / file name of the reference "
-                           "(CRT: file_paths, WAS: filename_text).",
+                "tooltip": "Optional: file path / file name of the reference (CRT: file_paths, WAS: filename_text). "
+                           "Only real image files inside ComfyUI's folders or the loader's folder are used.",
             })
         optional["regen_of"] = ("STRING", {
             "forceInput": True,
@@ -489,15 +546,15 @@ class GenArchiveContainer:
                 r = (e.get("refs") or {}).get(f"ref_{k}")
                 t = None
                 if r:
-                    p = os.path.join(sdir, r["file"])
-                    if os.path.isfile(p):
+                    p = _safe_join(sdir, r["file"])
+                    if p and os.path.isfile(p):
                         t = _load_tensor(p, megapixels)
                         parts.append(f"ref_{k}={r.get('orig_name') or os.path.basename(r['file'])}")
                     else:
                         print(f"{TAG} Reference file not found: {p}")
                 refs[k].append(t if t is not None else _blank())
-            p = os.path.join(sdir, e["file"])
-            results.append(_load_tensor(p) if os.path.isfile(p) else _blank())
+            p = _safe_join(sdir, e["file"])
+            results.append(_load_tensor(p) if p and os.path.isfile(p) else _blank())
             info_lines.append(f"{gid}: " + ", ".join(parts))
 
         if mode == "one_by_index":

@@ -120,13 +120,14 @@ def _export_category(s, data, cat):
     n = 0
     for gid in st.category_ids(data, key):
         e = data["entries"][gid]
-        src = os.path.join(sdir, e["file"])
-        if os.path.isfile(src):
+        real = os.path.realpath(sdir)   # files must stay inside the session folder
+        src = _inside(real, e["file"])
+        if src and os.path.isfile(src):
             shutil.copy2(src, os.path.join(out_dir, f"{gid}{os.path.splitext(src)[1]}"))
             n += 1
         for slot, r in (e.get("refs") or {}).items():
-            rp = os.path.join(sdir, r["file"])
-            if os.path.isfile(rp):
+            rp = _inside(real, r["file"])
+            if rp and os.path.isfile(rp):
                 nm = st.safe_name(r.get("orig_name") or os.path.basename(r["file"]), "ref")
                 shutil.copy2(rp, os.path.join(out_dir, f"{gid}__{slot}__{nm}"))
     return f"Categories/{st.safe_name(key, 'category')}", n

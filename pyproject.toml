@@ -1,7 +1,7 @@
 [project]
 name = "genarchive"
 description = "Archive every generated image together with the reference images it was made from. Fullscreen viewer, categories for failed images, one-click regeneration with the same references, color correction (presets, brush) and detail retouch from references."
-version = "1.0.0"
+version = "1.0.1"
 license = { file = "LICENSE" }
 readme = "README.md"
 requires-python = ">=3.10"

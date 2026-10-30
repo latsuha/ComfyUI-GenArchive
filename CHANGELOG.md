@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.0.1
+
+Security fix (reported during the ComfyUI-Manager review - thank you!).
+
+- **The `path_1 … path_4` inputs of *Generation Archive* no longer accept arbitrary files.** Before, a workflow could pass any absolute path and make the node copy that file (a key, a config...) into the archive, from where the viewer could serve it. Now a path is used only if it is a *real image file* (verified, not just by extension) that lies inside ComfyUI's input / output / temp folders or inside a folder configured on the connected loader node. Anything else is ignored and the image that came through the `ref_N` pin is stored instead. `..` traversal and symlinks pointing outside are rejected too. Set the environment variable `GENARCHIVE_STRICT_PATHS=1` to trust only ComfyUI's own folders.
+- Files named in `registry.json` (Archive Container, category export) must stay inside the session folder.
+
 ## 1.0.0
 
 First public release.
