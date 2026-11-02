@@ -115,10 +115,31 @@ def _upstream_node(prompt, unique_id, input_name):
 
 # --- safety: which files may be copied into the archive -------------------------------------------
 # A workflow must not be able to make this node copy arbitrary files (keys, configs...) into the archive.
-# A path is trusted only if it is a REAL IMAGE and lies inside ComfyUI's input/output/temp folders or inside a
-# folder that is configured on the connected loader node. Set GENARCHIVE_STRICT_PATHS=1 to trust ComfyUI's own
-# folders only. Anything else falls back to storing the image that came through the loader pin.
-_STRICT = os.environ.get("GENARCHIVE_STRICT_PATHS", "").strip().lower() in ("1", "true", "yes")
+# A path is trusted only if it is a REAL IMAGE and lies inside ComfyUI's own input/output/temp folders or inside a
+# folder that YOU list in the environment variable GENARCHIVE_TRUSTED_FOLDERS (separated by ';' on Windows, ':' elsewhere).
+# Folders merely configured on a loader node in the workflow are NOT trusted - a workflow must not decide what is
+# readable. Anything else falls back to storing the image that came through the loader pin.
+_warned = set()
+
+
+def _extra_trusted():
+    """Extra folders trusted by the person who runs ComfyUI (environment variable, not changeable by a workflow)."""
+    raw = os.environ.get("GENARCHIVE_TRUSTED_FOLDERS", "")
+    out = []
+    for s in raw.split(os.pathsep):
+        s = s.strip().strip('"')
+        if s and os.path.isdir(s):
+            out.append(s)
+    return out
+
+
+def _hint_untrusted(folder):
+    if folder in _warned:
+        return
+    _warned.add(folder)
+    print(f"{TAG} Note: '{folder}' is not a trusted folder, so a copy of the image from the loader is stored "
+          f"instead of the original file. To use the original files from there, set the environment variable "
+          f"GENARCHIVE_TRUSTED_FOLDERS=<folder> before starting ComfyUI.")
 _MAX_REF_BYTES = 512 * 1024 * 1024
 _valid_cache = {}
 
@@ -176,7 +197,7 @@ def _resolve_path(prompt, unique_id, img_input, name_input, name):
     """Finds the full path of the reference file, or None (then the image from the loader pin is stored).
 
     Only trusted paths are returned: a real image inside ComfyUI's input/output/temp folders or inside a folder
-    configured on the connected loader node (see the safety notes above)."""
+    listed in GENARCHIVE_TRUSTED_FOLDERS (see the safety notes above)."""
     try:
         nodes = []
         for key in (img_input, name_input):
@@ -196,7 +217,7 @@ def _resolve_path(prompt, unique_id, img_input, name_input, name):
                     for cand in (v, os.path.join(in_dir, v)):
                         if os.path.isdir(cand) and cand not in loader_dirs:
                             loader_dirs.append(cand)
-        allowed = roots if _STRICT else roots + loader_dirs
+        allowed = roots + _extra_trusted()
 
         def trusted(p):
             return bool(p) and any(_within(p, r) for r in allowed) and _is_image_file(p)
@@ -214,12 +235,16 @@ def _resolve_path(prompt, unique_id, img_input, name_input, name):
             if os.path.isabs(name):   # e.g. the file_paths output of a batch loader
                 if trusted(name):
                     return os.path.abspath(name)
+                if os.path.isfile(name):
+                    _hint_untrusted(os.path.dirname(os.path.abspath(name)))
             else:                     # e.g. filename_text of WAS Load Image Batch
                 for d in loader_dirs:
-                    if not _STRICT or any(_within(d, r) for r in roots):
+                    if any(_within(d, r) for r in allowed):   # the loader's folder must itself be a trusted folder
                         p = _try_file(d, name)
                         if p:
                             return p
+                    elif _try_file(d, name):
+                        _hint_untrusted(os.path.abspath(d))
     except Exception as e:
         print(f"{TAG} Could not resolve reference path: {e}")
     return None
@@ -338,7 +363,8 @@ class GenArchiveRegistry:
             optional[f"path_{k}"] = ("STRING", {
                 "forceInput": True,
                 "tooltip": "Optional: file path / file name of the reference (CRT: file_paths, WAS: filename_text). "
-                           "Only real image files inside ComfyUI's folders or the loader's folder are used.",
+                           "Only real image files inside ComfyUI's input/output/temp folders (or folders listed in "
+                           "GENARCHIVE_TRUSTED_FOLDERS) are used; otherwise the loader's image is stored.",
             })
         optional["regen_of"] = ("STRING", {
             "forceInput": True,

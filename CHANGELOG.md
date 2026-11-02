@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.2
+
+Security hardening, second round of the ComfyUI-Manager review.
+
+- **Strict by default:** the original file of a reference (`path_1 … path_4`) is now used only if it is a real image inside ComfyUI's own `input` / `output` / `temp` folders. Folders that are merely configured on a loader node in a workflow are **no longer trusted** (a workflow must not decide what the node may read); in that case the image that came through the `ref_N` pin is stored instead.
+- New, opt-in and controlled by the person who runs ComfyUI (not by a workflow): the environment variable `GENARCHIVE_TRUSTED_FOLDERS` (folders separated by `;` on Windows, `:` elsewhere) lists extra folders whose original files may be archived. A one-time console hint explains this when a reference is read from an untrusted folder.
+- `GENARCHIVE_STRICT_PATHS` (added in 1.0.1) is gone: strict is now the default.
+
 ## 1.0.1
 
 Security fix (reported during the ComfyUI-Manager review - thank you!).
